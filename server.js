@@ -1,3 +1,4 @@
+require("dotenv").config({ path: __dirname + "/.env.local" });
 const express = require("express");
 const path = require("path");
 const fs = require("fs");
@@ -9,8 +10,9 @@ const PORT = process.env.PORT || 3456;
 const POLL_INTERVAL_MS = 15 * 60 * 1000;
 const CONFIG_FILE = path.join(__dirname, ".user-config.json");
 const USER_ID = "pr-dashboard-user";
+const API_KEY = process.env.COMPOSIO_API_KEY;
 
-const composio = new Composio();
+const composio = new Composio({ apiKey: API_KEY });
 
 function loadConfig() {
   try { return JSON.parse(fs.readFileSync(CONFIG_FILE, "utf8")); }
@@ -23,51 +25,70 @@ function saveConfig(config) {
 
 let cachedData = { prs: [], lastUpdated: null, errors: [] };
 
-// --- Connection management: find any active connection for a toolkit ---
-
-async function findActiveConnection(toolkit) {
+async function resolveConnection(toolkit) {
   const accounts = await composio.connectedAccounts.list({
-    toolkitSlugs: [toolkit],
-    statuses: ["ACTIVE"],
+    toolkitSlugs: [toolkit], statuses: ["ACTIVE"],
   });
-  return accounts.items?.[0] || null;
+  const acc = accounts.items?.[0];
+  if (!acc) return null;
+
+  const res = await fetch("https://backend.composio.dev/api/v3/connected_accounts/" + acc.id, {
+    headers: { "x-api-key": API_KEY },
+  });
+  const info = await res.json();
+  return { connId: acc.id, entityId: info.user_id || "testing" };
 }
 
-async function getConnectionStatus() {
-  const [slack, github] = await Promise.all([
-    findActiveConnection("slack").catch(() => null),
-    findActiveConnection("github").catch(() => null),
+let slackConn = null;
+let githubConn = null;
+
+async function refreshConnections() {
+  [slackConn, githubConn] = await Promise.all([
+    resolveConnection("slack").catch(() => null),
+    resolveConnection("github").catch(() => null),
   ]);
-  return { slack, github };
+  if (slackConn) console.log("  Slack: " + slackConn.connId + " (entity: " + slackConn.entityId + ")");
+  if (githubConn) console.log("  GitHub: " + githubConn.connId + " (entity: " + githubConn.entityId + ")");
 }
 
-// --- API: connection status ---
+async function execTool(toolSlug, args, conn) {
+  if (!conn) throw new Error("No connection for " + toolSlug);
+  const result = await composio.tools.execute(toolSlug, {
+    userId: conn.entityId,
+    arguments: args,
+    dangerouslySkipVersionCheck: true,
+  });
+  if (!result.successful) {
+    throw new Error(toolSlug + ": " + (result.error || "failed"));
+  }
+  return result.data?.data || result.data;
+}
+
+function slackExec(toolSlug, args) { return execTool(toolSlug, args, slackConn); }
+function githubExec(toolSlug, args) { return execTool(toolSlug, args, githubConn); }
 
 app.get("/api/status", async (req, res) => {
   try {
-    const connections = await getConnectionStatus();
+    await refreshConnections();
     const config = loadConfig();
     res.json({
-      slackConnected: !!connections.slack,
-      githubConnected: !!connections.github,
+      slackConnected: !!slackConn,
+      githubConnected: !!githubConn,
       slackUserId: config.slackUserId || "",
       slackChannelId: config.slackChannelId || "",
-      configured: !!connections.slack && !!(config.slackUserId) && !!(config.slackChannelId),
+      configured: !!slackConn && !!(config.slackUserId) && !!(config.slackChannelId),
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// --- API: initiate connection via Composio link ---
-
 app.post("/api/connect/:toolkit", async (req, res) => {
   try {
     const toolkit = req.params.toolkit;
     const authConfigs = await composio.authConfigs.list({ toolkitSlugs: [toolkit] });
     const authConfig = authConfigs.items?.[0];
-    if (!authConfig) return res.status(400).json({ error: "No " + toolkit + " auth config found in Composio." });
-
+    if (!authConfig) return res.status(400).json({ error: "No " + toolkit + " auth config found." });
     const callbackUrl = req.body.callbackUrl || (req.protocol + "://" + req.get("host") + "/setup");
     const connectionRequest = await composio.connectedAccounts.link(USER_ID, authConfig.id, { callbackUrl });
     res.json({ redirectUrl: connectionRequest.redirectUrl });
@@ -76,20 +97,16 @@ app.post("/api/connect/:toolkit", async (req, res) => {
   }
 });
 
-// --- API: handle OAuth callback ---
-
 app.post("/api/connect/callback", async (req, res) => {
   try {
     const { connectedAccountId } = req.body;
     if (!connectedAccountId) return res.status(400).json({ error: "Missing connectedAccountId" });
     const account = await composio.connectedAccounts.get(connectedAccountId);
-    res.json({ ok: true, toolkit: account.toolkit?.slug || account.toolkit, status: account.status });
+    res.json({ ok: true, toolkit: account.toolkit?.slug || account.toolkit });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
-
-// --- API: save Slack config ---
 
 app.post("/api/config", (req, res) => {
   const config = loadConfig();
@@ -98,79 +115,6 @@ app.post("/api/config", (req, res) => {
   saveConfig(config);
   res.json({ ok: true });
 });
-
-// --- Tool execution via SDK ---
-
-let slackUserId = null;
-let githubUserId = null;
-let slackReady = false;
-let githubReady = false;
-
-async function resolveEntityUserId(toolkit) {
-  // Try known userIds until tools.execute succeeds for this toolkit
-  const candidates = [USER_ID, "testing", "default"];
-  const testTool = toolkit === "slack" ? "SLACK_FIND_CHANNELS" : "GITHUB_GET_A_PULL_REQUEST";
-  const testArgs = toolkit === "slack" ? { query: "general", limit: 1 } : { owner: "ComposioHQ", repo: "hermes", pull_number: 1 };
-
-  for (const uid of candidates) {
-    try {
-      await composio.tools.execute(testTool, {
-        userId: uid,
-        arguments: testArgs,
-        dangerouslySkipVersionCheck: true,
-      });
-      return uid;
-    } catch { /* try next */ }
-  }
-  return null;
-}
-
-async function refreshExecutors() {
-  const slack = await findActiveConnection("slack").catch(() => null);
-  const github = await findActiveConnection("github").catch(() => null);
-
-  if (slack) {
-    slackUserId = await resolveEntityUserId("slack");
-    slackReady = !!slackUserId;
-    if (slackReady) console.log("  Slack connected (entityId: " + slackUserId + ")");
-  } else {
-    slackReady = false;
-  }
-
-  if (github) {
-    githubUserId = await resolveEntityUserId("github");
-    githubReady = !!githubUserId;
-    if (githubReady) console.log("  GitHub connected (entityId: " + githubUserId + ")");
-  } else {
-    githubReady = false;
-  }
-
-  return { slack: slackReady, github: githubReady };
-}
-
-async function slackExecute(toolSlug, args) {
-  if (!slackReady) throw new Error("Slack not connected. Please connect via /setup.");
-  const result = await composio.tools.execute(toolSlug, {
-    userId: slackUserId,
-    arguments: args,
-    dangerouslySkipVersionCheck: true,
-  });
-  if (result.successful === false) throw new Error(toolSlug + " failed: " + (result.error || "unknown"));
-  return result.data;
-}
-
-async function githubExecute(toolSlug, args) {
-  if (!githubReady) throw new Error("GitHub not connected. Please connect via /setup.");
-  const result = await composio.tools.execute(toolSlug, {
-    userId: githubUserId,
-    arguments: args,
-    dangerouslySkipVersionCheck: true,
-  });
-  if (result.successful === false) throw new Error(toolSlug + " failed: " + (result.error || "unknown"));
-  return result.data;
-}
-
-// --- PR fetching logic ---
 
 function extractPRLinks(text) {
   const matches = [];
@@ -184,28 +128,21 @@ function extractPRLinks(text) {
 
 async function fetchSlackChannelPRs(config) {
   const prs = [];
-  const oneWeekAgo = Math.floor((Date.now() - 7 * 24 * 60 * 60 * 1000) / 1000);
-  const history = await slackExecute("SLACK_FETCH_CONVERSATION_HISTORY", {
-    channel: config.slackChannelId,
-    limit: 200,
-    oldest: String(oneWeekAgo),
+  const oneWeekAgo = Math.floor((Date.now() - 7 * 86400000) / 1000);
+  const history = await slackExec("SLACK_FETCH_CONVERSATION_HISTORY", {
+    channel: config.slackChannelId, limit: 200, oldest: String(oneWeekAgo),
   });
-
-  const messages = history?.messages || [];
   const slackUsers = await getSlackUserMap();
 
-  for (const msg of messages) {
+  for (const msg of (history?.messages || [])) {
     const text = msg.text || "";
     if (!text.includes("<@" + config.slackUserId + ">")) continue;
-
-    const links = extractPRLinks(text);
-    for (const link of links) {
-      const ts = parseFloat(msg.ts);
-      const date = new Date(ts * 1000).toISOString();
+    for (const link of extractPRLinks(text)) {
       const authorId = msg.user || msg.bot_id || "unknown";
       prs.push({
         title: "PR #" + link.number, url: link.url, repo: link.repo,
-        author: slackUsers[authorId] || authorId, date,
+        author: slackUsers[authorId] || authorId,
+        date: new Date(parseFloat(msg.ts) * 1000).toISOString(),
         source: "Slack Channel", number: link.number,
       });
     }
@@ -215,53 +152,46 @@ async function fetchSlackChannelPRs(config) {
 
 async function fetchSlackDMPRs(config) {
   const prs = [];
-  const conversations = await slackExecute("SLACK_LIST_CONVERSATIONS", {
+  const conversations = await slackExec("SLACK_LIST_CONVERSATIONS", {
     types: "im", limit: 200, user: config.slackUserId,
   });
-
-  const dmChannels = (conversations?.channels || []).filter((c) => c.is_im);
   const slackUsers = await getSlackUserMap();
 
-  for (const dm of dmChannels) {
+  for (const dm of (conversations?.channels || []).filter(c => c.is_im)) {
     try {
-      const oneWeekAgo = Math.floor((Date.now() - 7 * 24 * 60 * 60 * 1000) / 1000);
-      const history = await slackExecute("SLACK_FETCH_CONVERSATION_HISTORY", {
+      const oneWeekAgo = Math.floor((Date.now() - 7 * 86400000) / 1000);
+      const history = await slackExec("SLACK_FETCH_CONVERSATION_HISTORY", {
         channel: dm.id, limit: 30, oldest: String(oneWeekAgo),
       });
-
       for (const msg of (history?.messages || [])) {
         const text = msg.text || "";
         const links = extractPRLinks(text);
         if (links.length === 0) continue;
         if (!/review|look|check|approve|lgtm|pr\b/i.test(text)) continue;
-
         const authorId = msg.user || "unknown";
         if (authorId === config.slackUserId) continue;
 
         for (const link of links) {
-          const ts = parseFloat(msg.ts);
-          const date = new Date(ts * 1000).toISOString();
           prs.push({
             title: "PR #" + link.number, url: link.url, repo: link.repo,
-            author: slackUsers[authorId] || authorId, date,
+            author: slackUsers[authorId] || authorId,
+            date: new Date(parseFloat(msg.ts) * 1000).toISOString(),
             source: "Slack DM", number: link.number,
           });
         }
       }
-    } catch { /* skip unreadable DMs */ }
+    } catch { /* skip */ }
   }
   return prs;
 }
 
 let slackUserCache = null;
-
 async function getSlackUserMap() {
   if (slackUserCache) return slackUserCache;
   try {
-    const data = await slackExecute("SLACK_LIST_ALL_USERS", { limit: 500 });
-    const members = data?.members || [];
+    const data = await slackExec("SLACK_LIST_ALL_USERS", { limit: 500 });
     const map = {};
-    for (const m of members) {
+    for (const m of (data?.members || [])) {
       map[m.id] = m.profile?.real_name || m.real_name || m.name || m.id;
     }
     slackUserCache = map;
@@ -270,27 +200,20 @@ async function getSlackUserMap() {
 }
 
 async function enrichAndFilterPR(pr) {
-  if (!githubReady) return pr;
+  if (!githubConn) return pr;
   try {
-    const parts = pr.repo.split("/");
-    const data = await githubExecute("GITHUB_GET_A_PULL_REQUEST", {
-      owner: parts[0], repo: parts[1], pull_number: pr.number,
+    const [owner, repo] = pr.repo.split("/");
+    const data = await githubExec("GITHUB_GET_A_PULL_REQUEST", {
+      owner, repo, pull_number: pr.number,
     });
-
     if (data?.title) {
       pr.title = data.title;
     } else if (data?.details) {
       const m = data.details.match(/Subject:\s*(?:\[.*?\]\s*)?(.*)/);
       if (m) pr.title = m[1].trim();
-
-      if (data.details.includes('"state": "closed"') || data.details.includes('"merged": true')) {
-        pr._exclude = true;
-      }
+      if (/\"state\":\s*\"closed\"|\"merged\":\s*true/.test(data.details)) pr._exclude = true;
     }
-
-    if (data?.state === "closed" || data?.merged === true) {
-      pr._exclude = true;
-    }
+    if (data?.state === "closed" || data?.merged) pr._exclude = true;
   } catch (err) {
     console.error("  Enrich failed for " + pr.url + ": " + err.message);
   }
@@ -299,77 +222,53 @@ async function enrichAndFilterPR(pr) {
 
 function dedup(prs) {
   const seen = new Map();
-  for (const pr of prs) {
-    if (!seen.has(pr.url)) seen.set(pr.url, pr);
-  }
+  for (const pr of prs) { if (!seen.has(pr.url)) seen.set(pr.url, pr); }
   return Array.from(seen.values());
 }
 
 async function pollAll() {
   const config = loadConfig();
-  const status = await refreshExecutors();
+  await refreshConnections();
 
-  if (!slackReady || !config.slackUserId || !config.slackChannelId) {
-    console.log("[" + new Date().toISOString() + "] Skipping poll - not configured yet");
+  if (!slackConn || !config.slackUserId || !config.slackChannelId) {
+    console.log("[" + new Date().toISOString() + "] Skipping poll - not configured");
     return;
   }
 
-  console.log("[" + new Date().toISOString() + "] Polling for PRs...");
+  console.log("[" + new Date().toISOString() + "] Polling...");
   const errors = [];
-  let channelPRs = [];
-  let dmPRs = [];
+  let channelPRs = [], dmPRs = [];
 
-  try {
-    channelPRs = await fetchSlackChannelPRs(config);
-    console.log("  Slack Channel: " + channelPRs.length + " PRs");
-  } catch (err) {
-    errors.push("Slack Channel: " + err.message);
-    console.error("  Slack Channel error:", err.message);
-  }
+  try { channelPRs = await fetchSlackChannelPRs(config); console.log("  Channel: " + channelPRs.length); }
+  catch (err) { errors.push("Channel: " + err.message); }
 
-  try {
-    dmPRs = await fetchSlackDMPRs(config);
-    console.log("  Slack DMs: " + dmPRs.length + " PRs");
-  } catch (err) {
-    errors.push("Slack DMs: " + err.message);
-    console.error("  Slack DMs error:", err.message);
-  }
+  try { dmPRs = await fetchSlackDMPRs(config); console.log("  DMs: " + dmPRs.length); }
+  catch (err) { errors.push("DMs: " + err.message); }
 
   let allPRs = dedup([...channelPRs, ...dmPRs]);
 
-  if (githubReady) {
-    await Promise.allSettled(allPRs.slice(0, 15).map((pr) => enrichAndFilterPR(pr)));
-    allPRs = allPRs.filter((p) => !p._exclude);
+  if (githubConn) {
+    await Promise.allSettled(allPRs.slice(0, 15).map(pr => enrichAndFilterPR(pr)));
+    allPRs = allPRs.filter(p => !p._exclude);
   }
 
   allPRs.sort((a, b) => new Date(b.date) - new Date(a.date));
   cachedData = { prs: allPRs, lastUpdated: new Date().toISOString(), errors };
-  console.log("  Total (deduped): " + allPRs.length + " PRs");
+  console.log("  Total: " + allPRs.length);
 }
 
-// --- Routes ---
-
-app.get("/setup", (req, res) => {
-  res.sendFile(path.join(__dirname, "setup.html"));
-});
+app.get("/setup", (req, res) => res.sendFile(path.join(__dirname, "setup.html")));
 
 app.get("/", async (req, res) => {
   const config = loadConfig();
-  const slack = await findActiveConnection("slack").catch(() => null);
-  if (!slack || !config.slackUserId || !config.slackChannelId) {
-    return res.redirect("/setup");
-  }
+  const slack = await resolveConnection("slackbot").catch(() => null);
+  if (!slack || !config.slackUserId || !config.slackChannelId) return res.redirect("/setup");
   res.sendFile(path.join(__dirname, "index.html"));
 });
 
-app.get("/api/prs", (req, res) => {
-  res.json(cachedData);
-});
+app.get("/api/prs", (req, res) => res.json(cachedData));
 
-app.post("/api/refresh", async (req, res) => {
-  await pollAll();
-  res.json(cachedData);
-});
+app.post("/api/refresh", async (req, res) => { await pollAll(); res.json(cachedData); });
 
 app.listen(PORT, async () => {
   console.log("PR Review Dashboard running on port " + PORT);

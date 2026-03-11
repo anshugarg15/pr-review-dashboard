@@ -100,14 +100,13 @@ async function fetchSlackDMPRs() {
   const prs = [];
   const conversations = await executeSlackTool("SLACK_LIST_CONVERSATIONS", {
     types: "im",
-    limit: 50,
+    limit: 200,
   });
 
   const dmChannels = (conversations?.channels || []).filter((c) => c.is_im);
   const slackUsers = await getSlackUserMap();
-  const recentDMs = dmChannels.slice(0, 20);
 
-  for (const dm of recentDMs) {
+  for (const dm of dmChannels) {
     try {
       const oneWeekAgo = Math.floor((Date.now() - 7 * 24 * 60 * 60 * 1000) / 1000);
       const history = await executeSlackTool("SLACK_FETCH_CONVERSATION_HISTORY", {

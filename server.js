@@ -15,8 +15,12 @@ const API_KEY = process.env.COMPOSIO_API_KEY;
 const composio = new Composio({ apiKey: API_KEY });
 
 function loadConfig() {
-  try { return JSON.parse(fs.readFileSync(CONFIG_FILE, "utf8")); }
-  catch { return {}; }
+  let config = {};
+  try { config = JSON.parse(fs.readFileSync(CONFIG_FILE, "utf8")); }
+  catch { /* no file */ }
+  if (process.env.SLACK_USER_ID) config.slackUserId = process.env.SLACK_USER_ID;
+  if (process.env.SLACK_CHANNEL_ID) config.slackChannelId = process.env.SLACK_CHANNEL_ID;
+  return config;
 }
 
 function saveConfig(config) {

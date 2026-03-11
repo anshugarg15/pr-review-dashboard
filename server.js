@@ -101,6 +101,7 @@ async function fetchSlackDMPRs() {
   const conversations = await executeSlackTool("SLACK_LIST_CONVERSATIONS", {
     types: "im",
     limit: 200,
+    user: SLACK_USER_ID,
   });
 
   const dmChannels = (conversations?.channels || []).filter((c) => c.is_im);

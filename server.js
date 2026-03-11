@@ -40,7 +40,8 @@ async function resolveConnection(toolkit) {
     headers: { "x-api-key": API_KEY },
   });
   const info = await res.json();
-  return { connId: acc.id, entityId: info.user_id || "testing" };
+  const token = info.data?.access_token || info.state?.val?.access_token || null;
+  return { connId: acc.id, entityId: info.user_id || "testing", token };
 }
 
 let slackConn = null;
@@ -203,6 +204,8 @@ async function getSlackUserMap() {
   } catch { return {}; }
 }
 
+const GITHUB_USERNAME = process.env.GITHUB_USERNAME || "anshugarg15";
+
 async function enrichAndFilterPR(pr) {
   if (!githubConn) return pr;
   try {
@@ -218,6 +221,20 @@ async function enrichAndFilterPR(pr) {
       if (/\"state\":\s*\"closed\"|\"merged\":\s*true/.test(data.details)) pr._exclude = true;
     }
     if (data?.state === "closed" || data?.merged) pr._exclude = true;
+
+    if (!pr._exclude && githubConn.token) {
+      const reviewsRes = await fetch(
+        "https://api.github.com/repos/" + owner + "/" + repo + "/pulls/" + pr.number + "/reviews",
+        { headers: { "Accept": "application/vnd.github+json", "Authorization": "Bearer " + githubConn.token, "User-Agent": "pr-review-dashboard" } }
+      );
+      if (reviewsRes.ok) {
+        const reviews = await reviewsRes.json();
+        const myApproval = reviews.some(
+          r => r.user?.login?.toLowerCase() === GITHUB_USERNAME.toLowerCase() && r.state === "APPROVED"
+        );
+        if (myApproval) pr._exclude = true;
+      }
+    }
   } catch (err) {
     console.error("  Enrich failed for " + pr.url + ": " + err.message);
   }

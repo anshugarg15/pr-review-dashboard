@@ -7,7 +7,7 @@ const { Composio } = require("@composio/core");
 const app = express();
 app.use(express.json());
 const PORT = process.env.PORT || 3456;
-const POLL_INTERVAL_MS = 15 * 60 * 1000;
+const POLL_INTERVAL_MS = 5 * 60 * 1000;
 const CONFIG_FILE = path.join(__dirname, ".user-config.json");
 const USER_ID = "pr-dashboard-user";
 const API_KEY = process.env.COMPOSIO_API_KEY;

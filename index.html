@@ -180,7 +180,7 @@
     <div class="header-right">
       <div class="auto-refresh-indicator">
         <div class="pulse"></div>
-        Auto-refresh every 15 min
+        Auto-refresh every 5 min
       </div>
       <span id="lastUpdated">--</span>
       <button class="refresh-btn" id="refreshBtn" onclick="refresh()">Refresh Now</button>
@@ -334,7 +334,7 @@
     }
 
     render();
-    setInterval(render, 15 * 60 * 1000);
+    setInterval(render, 5 * 60 * 1000);
   </script>
 </body>
 </html>

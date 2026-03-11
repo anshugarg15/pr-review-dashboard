@@ -179,6 +179,9 @@ async function enrichPRTitle(pr) {
     });
     if (data?.title) {
       pr.title = data.title;
+    } else if (data?.details) {
+      const subjectMatch = data.details.match(/Subject:\s*(?:\[.*?\]\s*)?(.*)/);
+      if (subjectMatch) pr.title = subjectMatch[1].trim();
     }
   } catch (err) {
     console.error("  Enrich failed for " + pr.url + ": " + err.message);

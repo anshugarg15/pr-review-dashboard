@@ -7,7 +7,8 @@ const PORT = process.env.PORT || 3456;
 const COMPOSIO_API_KEY = process.env.COMPOSIO_API_KEY || "ak_HDZNFcCWD73uqX1X6928";
 const SLACK_CONNECTED_ACCOUNT = process.env.SLACK_CONNECTED_ACCOUNT || "ca_Kh1UxKh-s7LF";
 const GITHUB_CONNECTED_ACCOUNT = process.env.GITHUB_CONNECTED_ACCOUNT || "ca_-9_HjKWMsf4X";
-const COMPOSIO_ENTITY_ID = "testing";
+const SLACK_ENTITY_ID = "testing";
+const GITHUB_ENTITY_ID = "pg-test-6a3987dd-3cb4-4835-9024-997bcb3c0cef";
 const SLACK_USER_ID = process.env.SLACK_USER_ID || "U09RYKERAUU";
 const SLACK_PR_CHANNEL_ID = process.env.SLACK_PR_CHANNEL_ID || "C08G49WNKCL";
 const COMPOSIO_BASE_URL = "https://backend.composio.dev/api/v3";
@@ -16,7 +17,7 @@ const POLL_INTERVAL_MS = 15 * 60 * 1000;
 
 let cachedData = { prs: [], lastUpdated: null, errors: [] };
 
-async function executeComposioTool(toolSlug, args, connectedAccountId) {
+async function executeComposioTool(toolSlug, args, connectedAccountId, entityId) {
   const res = await fetch(COMPOSIO_BASE_URL + "/tools/execute/" + toolSlug, {
     method: "POST",
     headers: {
@@ -25,7 +26,7 @@ async function executeComposioTool(toolSlug, args, connectedAccountId) {
     },
     body: JSON.stringify({
       connected_account_id: connectedAccountId,
-      entity_id: COMPOSIO_ENTITY_ID,
+      entity_id: entityId,
       arguments: args,
     }),
   });
@@ -37,11 +38,11 @@ async function executeComposioTool(toolSlug, args, connectedAccountId) {
 }
 
 function executeSlackTool(toolSlug, args) {
-  return executeComposioTool(toolSlug, args, SLACK_CONNECTED_ACCOUNT);
+  return executeComposioTool(toolSlug, args, SLACK_CONNECTED_ACCOUNT, SLACK_ENTITY_ID);
 }
 
 function executeGitHubTool(toolSlug, args) {
-  return executeComposioTool(toolSlug, args, GITHUB_CONNECTED_ACCOUNT);
+  return executeComposioTool(toolSlug, args, GITHUB_CONNECTED_ACCOUNT, GITHUB_ENTITY_ID);
 }
 
 function extractPRLinks(text) {
@@ -176,9 +177,11 @@ async function enrichPRTitle(pr) {
       repo: parts[1],
       pull_number: pr.number,
     });
-    if (data?.title) pr.title = data.title;
-  } catch {
-    // keep original title
+    if (data?.title) {
+      pr.title = data.title;
+    }
+  } catch (err) {
+    console.error("  Enrich failed for " + pr.url + ": " + err.message);
   }
   return pr;
 }

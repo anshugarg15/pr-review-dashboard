@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PR Review Dashboard - Setup</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: #0d1117;
+      color: #e6edf3;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .setup-card {
+      background: #161b22;
+      border: 1px solid #30363d;
+      border-radius: 12px;
+      padding: 40px;
+      max-width: 520px;
+      width: 100%;
+    }
+    h1 { font-size: 24px; margin-bottom: 8px; }
+    .subtitle { color: #8b949e; font-size: 14px; margin-bottom: 32px; }
+    .step {
+      display: flex;
+      align-items: flex-start;
+      gap: 16px;
+      margin-bottom: 24px;
+      padding: 16px;
+      border: 1px solid #30363d;
+      border-radius: 8px;
+    }
+    .step.done { border-color: #238636; background: #0d1f0d; }
+    .step-num {
+      width: 32px;
+      height: 32px;
+      border-radius: 50%;
+      background: #21262d;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 700;
+      font-size: 14px;
+      flex-shrink: 0;
+    }
+    .step.done .step-num { background: #238636; }
+    .step-content { flex: 1; }
+    .step-title { font-weight: 600; font-size: 15px; margin-bottom: 4px; }
+    .step-desc { font-size: 13px; color: #8b949e; margin-bottom: 10px; }
+    .btn {
+      background: #238636;
+      color: #fff;
+      border: none;
+      padding: 8px 20px;
+      border-radius: 6px;
+      font-size: 13px;
+      cursor: pointer;
+      font-weight: 500;
+    }
+    .btn:hover { background: #2ea043; }
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    .btn-outline {
+      background: transparent;
+      border: 1px solid #30363d;
+      color: #e6edf3;
+    }
+    .btn-outline:hover { border-color: #58a6ff; }
+    .input-group { margin-bottom: 10px; }
+    .input-group label { display: block; font-size: 12px; color: #8b949e; margin-bottom: 4px; }
+    .input-group input {
+      width: 100%;
+      background: #0d1117;
+      border: 1px solid #30363d;
+      color: #e6edf3;
+      padding: 8px 12px;
+      border-radius: 6px;
+      font-size: 14px;
+    }
+    .input-group input:focus { outline: none; border-color: #58a6ff; }
+    .status { font-size: 12px; margin-top: 6px; }
+    .status.connected { color: #3fb950; }
+    .status.pending { color: #d29922; }
+    .go-btn {
+      width: 100%;
+      padding: 12px;
+      font-size: 16px;
+      margin-top: 16px;
+    }
+  </style>
+</head>
+<body>
+  <div class="setup-card">
+    <h1>PR Review Dashboard</h1>
+    <p class="subtitle">Connect your accounts to get started</p>
+
+    <div class="step" id="step-slack">
+      <div class="step-num">1</div>
+      <div class="step-content">
+        <div class="step-title">Connect Slack</div>
+        <div class="step-desc">Allows reading #pull-requests channel and your DMs for PR review requests</div>
+        <button class="btn" id="connectSlackBtn" onclick="connectSlack()">Connect Slack</button>
+        <div class="status" id="slackStatus"></div>
+      </div>
+    </div>
+
+    <div class="step" id="step-github">
+      <div class="step-num">2</div>
+      <div class="step-content">
+        <div class="step-title">Connect GitHub</div>
+        <div class="step-desc">Used to fetch PR titles and details for links found in Slack</div>
+        <button class="btn" id="connectGithubBtn" onclick="connectGithub()">Connect GitHub</button>
+        <div class="status" id="githubStatus"></div>
+      </div>
+    </div>
+
+    <div class="step" id="step-config">
+      <div class="step-num">3</div>
+      <div class="step-content">
+        <div class="step-title">Configure Slack details</div>
+        <div class="step-desc">Your Slack user ID and the #pull-requests channel ID</div>
+        <div class="input-group">
+          <label>Slack User ID (e.g. U09RYKERAUU)</label>
+          <input type="text" id="slackUserId" placeholder="U..." />
+        </div>
+        <div class="input-group">
+          <label>Slack PR Channel ID (e.g. C08G49WNKCL)</label>
+          <input type="text" id="slackChannelId" placeholder="C..." />
+        </div>
+        <button class="btn btn-outline" onclick="saveConfig()">Save</button>
+        <div class="status" id="configStatus"></div>
+      </div>
+    </div>
+
+    <button class="btn go-btn" id="goBtn" onclick="window.location='/'" disabled>Go to Dashboard</button>
+  </div>
+
+  <script>
+    async function loadState() {
+      const params = new URLSearchParams(window.location.search);
+      const connectedAccountId = params.get("connectedAccountId");
+      if (connectedAccountId) {
+        await fetch("/api/connect/callback", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ connectedAccountId }),
+        });
+        window.history.replaceState({}, "", "/setup");
+      }
+
+      const res = await fetch("/api/status");
+      const config = await res.json();
+
+      if (config.slackConnected) {
+        document.getElementById("step-slack").classList.add("done");
+        document.getElementById("slackStatus").textContent = "Connected";
+        document.getElementById("slackStatus").className = "status connected";
+        document.getElementById("connectSlackBtn").textContent = "Reconnect";
+      }
+      if (config.githubConnected) {
+        document.getElementById("step-github").classList.add("done");
+        document.getElementById("githubStatus").textContent = "Connected";
+        document.getElementById("githubStatus").className = "status connected";
+        document.getElementById("connectGithubBtn").textContent = "Reconnect";
+      }
+      if (config.slackUserId) document.getElementById("slackUserId").value = config.slackUserId;
+      if (config.slackChannelId) document.getElementById("slackChannelId").value = config.slackChannelId;
+      if (config.configured) document.getElementById("goBtn").disabled = false;
+    }
+
+    async function connectSlack() {
+      const btn = document.getElementById("connectSlackBtn");
+      btn.disabled = true;
+      btn.textContent = "Connecting...";
+      try {
+        const res = await fetch("/api/connect/slack", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ callbackUrl: window.location.origin + "/setup" }),
+        });
+        const data = await res.json();
+        if (data.redirectUrl) window.location.href = data.redirectUrl;
+        else alert("Error: " + (data.error || "Unknown error"));
+      } catch (err) {
+        alert("Error: " + err.message);
+      }
+      btn.disabled = false;
+      btn.textContent = "Connect Slack";
+    }
+
+    async function connectGithub() {
+      const btn = document.getElementById("connectGithubBtn");
+      btn.disabled = true;
+      btn.textContent = "Connecting...";
+      try {
+        const res = await fetch("/api/connect/github", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ callbackUrl: window.location.origin + "/setup" }),
+        });
+        const data = await res.json();
+        if (data.redirectUrl) window.location.href = data.redirectUrl;
+        else alert("Error: " + (data.error || "Unknown error"));
+      } catch (err) {
+        alert("Error: " + err.message);
+      }
+      btn.disabled = false;
+      btn.textContent = "Connect GitHub";
+    }
+
+    async function saveConfig() {
+      const slackUserId = document.getElementById("slackUserId").value.trim();
+      const slackChannelId = document.getElementById("slackChannelId").value.trim();
+      if (!slackUserId || !slackChannelId) {
+        document.getElementById("configStatus").textContent = "Both fields required";
+        document.getElementById("configStatus").className = "status pending";
+        return;
+      }
+      await fetch("/api/config", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ slackUserId, slackChannelId }),
+      });
+      document.getElementById("configStatus").textContent = "Saved!";
+      document.getElementById("configStatus").className = "status connected";
+      document.getElementById("step-config").classList.add("done");
+      await loadState();
+    }
+
+    loadState();
+  </script>
+</body>
+</html>

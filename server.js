@@ -8,7 +8,10 @@ const app = express();
 app.use(express.json());
 const PORT = process.env.PORT || 3456;
 const POLL_INTERVAL_MS = 5 * 60 * 1000;
-const CONFIG_FILE = path.join(__dirname, ".user-config.json");
+const DATA_DIR = fs.existsSync("/data") ? "/data" : __dirname;
+const CONFIG_FILE = path.join(DATA_DIR, ".user-config.json");
+const ARCHIVE_FILE = path.join(DATA_DIR, ".archived-prs.json");
+const KNOWN_PRS_FILE = path.join(DATA_DIR, ".known-prs.json");
 const USER_ID = "pr-dashboard-user";
 const API_KEY = process.env.COMPOSIO_API_KEY;
 
@@ -29,8 +32,6 @@ function saveConfig(config) {
 
 let cachedData = { prs: [], lastUpdated: null, errors: [] };
 
-const ARCHIVE_FILE = path.join(__dirname, ".archived-prs.json");
-
 function loadArchived() {
   try { return JSON.parse(fs.readFileSync(ARCHIVE_FILE, "utf8")); }
   catch { return []; }
@@ -38,6 +39,15 @@ function loadArchived() {
 
 function saveArchived(urls) {
   fs.writeFileSync(ARCHIVE_FILE, JSON.stringify(urls, null, 2));
+}
+
+function loadKnownPRs() {
+  try { return JSON.parse(fs.readFileSync(KNOWN_PRS_FILE, "utf8")); }
+  catch { return []; }
+}
+
+function saveKnownPRs(prs) {
+  fs.writeFileSync(KNOWN_PRS_FILE, JSON.stringify(prs, null, 2));
 }
 
 async function resolveConnection(toolkit) {
@@ -310,15 +320,23 @@ async function pollAll() {
   try { dmPRs = await fetchSlackDMPRs(config); console.log("  DMs: " + dmPRs.length); }
   catch (err) { errors.push("DMs: " + err.message); }
 
-  let allPRs = dedup([...channelPRs, ...dmPRs]);
+  const newPRs = dedup([...channelPRs, ...dmPRs]);
+  const knownPRs = loadKnownPRs();
+
+  const merged = new Map();
+  for (const pr of knownPRs) merged.set(pr.url, pr);
+  for (const pr of newPRs) merged.set(pr.url, pr);
+  let allPRs = Array.from(merged.values());
 
   const archived = new Set(loadArchived());
   allPRs = allPRs.filter(p => !archived.has(p.url));
 
   if (githubConn) {
-    await Promise.allSettled(allPRs.slice(0, 15).map(pr => enrichAndFilterPR(pr)));
+    await Promise.allSettled(allPRs.slice(0, 30).map(pr => enrichAndFilterPR(pr)));
     allPRs = allPRs.filter(p => !p._exclude);
   }
+
+  saveKnownPRs(allPRs);
 
   allPRs.sort((a, b) => new Date(b.date) - new Date(a.date));
   cachedData = { prs: allPRs, lastUpdated: new Date().toISOString(), errors };
@@ -329,7 +347,7 @@ app.get("/setup", (req, res) => res.sendFile(path.join(__dirname, "setup.html"))
 
 app.get("/", async (req, res) => {
   const config = loadConfig();
-  const slack = await resolveConnection("slackbot").catch(() => null);
+  const slack = await resolveConnection("slack").catch(() => null);
   if (!slack || !config.slackUserId || !config.slackChannelId) return res.redirect("/setup");
   res.sendFile(path.join(__dirname, "index.html"));
 });

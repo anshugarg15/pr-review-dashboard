@@ -174,11 +174,11 @@ function extractPRLinks(text) {
   return matches;
 }
 
-async function fetchSlackChannelPRs(config) {
+async function fetchSlackChannelPRs(config, lookbackDays) {
   const prs = [];
-  const oneWeekAgo = Math.floor((Date.now() - 2 * 86400000) / 1000);
+  const oldest = Math.floor((Date.now() - lookbackDays * 86400000) / 1000);
   const history = await slackExec("SLACK_FETCH_CONVERSATION_HISTORY", {
-    channel: config.slackChannelId, limit: 200, oldest: String(oneWeekAgo),
+    channel: config.slackChannelId, limit: 200, oldest: String(oldest),
   });
   const slackUsers = await getSlackUserMap();
 
@@ -198,23 +198,23 @@ async function fetchSlackChannelPRs(config) {
   return prs;
 }
 
-async function fetchSlackDMPRs(config) {
+async function fetchSlackDMPRs(config, lookbackDays) {
   const prs = [];
-  const twoDaysAgo = Math.floor((Date.now() - 2 * 86400000) / 1000);
+  const oldest = Math.floor((Date.now() - lookbackDays * 86400000) / 1000);
   const conversations = await slackExec("SLACK_LIST_CONVERSATIONS", {
     types: "im", limit: 200, user: config.slackUserId,
   });
   const slackUsers = await getSlackUserMap();
 
   const recentDMs = (conversations?.channels || [])
-    .filter(c => c.is_im && c.updated && c.updated > twoDaysAgo);
+    .filter(c => c.is_im && c.updated && c.updated > oldest);
 
   const BATCH_SIZE = 5;
   for (let i = 0; i < recentDMs.length; i += BATCH_SIZE) {
     const batch = recentDMs.slice(i, i + BATCH_SIZE);
     const results = await Promise.allSettled(batch.map(async (dm) => {
       const history = await slackExec("SLACK_FETCH_CONVERSATION_HISTORY", {
-        channel: dm.id, limit: 30, oldest: String(twoDaysAgo),
+        channel: dm.id, limit: 30, oldest: String(oldest),
       });
       return { dm, messages: history?.messages || [] };
     }));
@@ -301,7 +301,7 @@ function dedup(prs) {
   return Array.from(seen.values());
 }
 
-async function pollAll() {
+async function pollAll(lookbackDays) {
   const config = loadConfig();
   await refreshConnections();
 
@@ -310,14 +310,15 @@ async function pollAll() {
     return;
   }
 
-  console.log("[" + new Date().toISOString() + "] Polling...");
+  const days = lookbackDays || 2;
+  console.log("[" + new Date().toISOString() + "] Polling (" + days + "d lookback)...");
   const errors = [];
   let channelPRs = [], dmPRs = [];
 
-  try { channelPRs = await fetchSlackChannelPRs(config); console.log("  Channel: " + channelPRs.length); }
+  try { channelPRs = await fetchSlackChannelPRs(config, days); console.log("  Channel: " + channelPRs.length); }
   catch (err) { errors.push("Channel: " + err.message); }
 
-  try { dmPRs = await fetchSlackDMPRs(config); console.log("  DMs: " + dmPRs.length); }
+  try { dmPRs = await fetchSlackDMPRs(config, days); console.log("  DMs: " + dmPRs.length); }
   catch (err) { errors.push("DMs: " + err.message); }
 
   const newPRs = dedup([...channelPRs, ...dmPRs]);
@@ -354,7 +355,11 @@ app.get("/", async (req, res) => {
 
 app.get("/api/prs", (req, res) => res.json(cachedData));
 
-app.post("/api/refresh", async (req, res) => { await pollAll(); res.json(cachedData); });
+app.post("/api/refresh", async (req, res) => {
+  const days = req.body.days ? parseInt(req.body.days, 10) : undefined;
+  await pollAll(days);
+  res.json(cachedData);
+});
 
 app.listen(PORT, async () => {
   console.log("PR Review Dashboard running on port " + PORT);

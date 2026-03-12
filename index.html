@@ -244,22 +244,79 @@
       `;
     }
 
+    let archivedUrls = [];
+    let showingArchived = false;
+
     function renderFilters() {
       const filters = ["all", "Slack Channel", "Slack DM"];
-      document.getElementById("filters").innerHTML = filters.map(f => {
-        const cls = f === currentFilter ? "filter-btn active" : "filter-btn";
+      let html = filters.map(f => {
+        const cls = (!showingArchived && f === currentFilter) ? "filter-btn active" : "filter-btn";
         const label = f === "all" ? "All" : f;
         return `<button class="${cls}" onclick="setFilter('${f}')">${label}</button>`;
       }).join("");
+      const archiveCls = showingArchived ? "filter-btn active" : "filter-btn";
+      html += `<button class="${archiveCls}" onclick="toggleArchived()" style="margin-left:auto">Archived (${archivedUrls.length})</button>`;
+      document.getElementById("filters").innerHTML = html;
     }
 
     function setFilter(filter) {
+      showingArchived = false;
       currentFilter = filter;
       renderFilters();
       renderTable(allPRs);
     }
 
+    async function toggleArchived() {
+      showingArchived = !showingArchived;
+      if (showingArchived) {
+        const res = await fetch("/api/archive");
+        archivedUrls = await res.json();
+        renderFilters();
+        renderArchivedTable();
+      } else {
+        renderFilters();
+        renderTable(allPRs);
+      }
+    }
+
+    function renderArchivedTable() {
+      if (archivedUrls.length === 0) {
+        document.getElementById("content").innerHTML = `
+          <div class="empty-state">
+            <h2>No archived PRs</h2>
+            <p>PRs you archive will appear here.</p>
+          </div>`;
+        return;
+      }
+      const rows = archivedUrls.map(url => {
+        const match = url.match(/github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)/);
+        const repo = match ? match[1] : "";
+        const num = match ? match[2] : "";
+        return `<tr>
+          <td><a href="${url}" target="_blank">PR #${num}</a><div class="repo-name">${repo}</div></td>
+          <td><button class="archive-btn" onclick="unarchivePR('${url}')">Restore</button></td>
+        </tr>`;
+      }).join("");
+      document.getElementById("content").innerHTML = `
+        <table>
+          <thead><tr><th>Pull Request</th><th></th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>`;
+    }
+
+    async function unarchivePR(url) {
+      await fetch("/api/archive", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url }),
+      });
+      archivedUrls = archivedUrls.filter(u => u !== url);
+      renderFilters();
+      renderArchivedTable();
+    }
+
     function renderTable(prs) {
+      if (showingArchived) return renderArchivedTable();
       const filtered = currentFilter === "all" ? prs : prs.filter(p => p.source === currentFilter);
 
       if (filtered.length === 0) {
@@ -312,7 +369,8 @@
     }
 
     async function render() {
-      const data = await fetchData();
+      const [data, archiveRes] = await Promise.all([fetchData(), fetch("/api/archive")]);
+      archivedUrls = await archiveRes.json();
       allPRs = data.prs || [];
 
       if (data.lastUpdated) {

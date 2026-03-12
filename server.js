@@ -190,18 +190,29 @@ async function fetchSlackChannelPRs(config) {
 
 async function fetchSlackDMPRs(config) {
   const prs = [];
+  const twoDaysAgo = Math.floor((Date.now() - 2 * 86400000) / 1000);
   const conversations = await slackExec("SLACK_LIST_CONVERSATIONS", {
     types: "im", limit: 200, user: config.slackUserId,
   });
   const slackUsers = await getSlackUserMap();
 
-  for (const dm of (conversations?.channels || []).filter(c => c.is_im)) {
-    try {
-      const oneWeekAgo = Math.floor((Date.now() - 2 * 86400000) / 1000);
+  const recentDMs = (conversations?.channels || [])
+    .filter(c => c.is_im && c.updated && c.updated > twoDaysAgo);
+
+  const BATCH_SIZE = 5;
+  for (let i = 0; i < recentDMs.length; i += BATCH_SIZE) {
+    const batch = recentDMs.slice(i, i + BATCH_SIZE);
+    const results = await Promise.allSettled(batch.map(async (dm) => {
       const history = await slackExec("SLACK_FETCH_CONVERSATION_HISTORY", {
-        channel: dm.id, limit: 30, oldest: String(oneWeekAgo),
+        channel: dm.id, limit: 30, oldest: String(twoDaysAgo),
       });
-      for (const msg of (history?.messages || [])) {
+      return { dm, messages: history?.messages || [] };
+    }));
+
+    for (const result of results) {
+      if (result.status !== "fulfilled") continue;
+      const { dm, messages } = result.value;
+      for (const msg of messages) {
         const text = msg.text || "";
         const links = extractPRLinks(text);
         if (links.length === 0) continue;
@@ -218,7 +229,7 @@ async function fetchSlackDMPRs(config) {
           });
         }
       }
-    } catch { /* skip */ }
+    }
   }
   return prs;
 }

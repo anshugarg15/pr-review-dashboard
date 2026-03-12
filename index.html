@@ -151,6 +151,16 @@
     }
     @keyframes spin { to { transform: rotate(360deg); } }
     .date-cell { white-space: nowrap; color: #8b949e; font-size: 13px; }
+    .archive-btn {
+      background: none;
+      border: 1px solid #30363d;
+      color: #8b949e;
+      padding: 4px 10px;
+      border-radius: 6px;
+      font-size: 11px;
+      cursor: pointer;
+    }
+    .archive-btn:hover { border-color: #f85149; color: #f85149; }
     .filters {
       display: flex;
       gap: 8px;
@@ -270,6 +280,7 @@
           <td>${escapeHtml(pr.author)}</td>
           <td><span class="source-badge ${sourceClass(pr.source)}">${pr.source}</span></td>
           <td class="date-cell" title="${new Date(pr.date).toLocaleString()}">${relativeTime(pr.date)}</td>
+          <td><button class="archive-btn" onclick="archivePR('${pr.url}')">Archive</button></td>
         </tr>
       `).join("");
 
@@ -281,6 +292,7 @@
               <th>Author</th>
               <th>Source</th>
               <th>Date</th>
+              <th></th>
             </tr>
           </thead>
           <tbody>${rows}</tbody>
@@ -331,6 +343,17 @@
         btn.disabled = false;
         btn.textContent = "Refresh Now";
       }
+    }
+
+    async function archivePR(url) {
+      await fetch("/api/archive", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url }),
+      });
+      allPRs = allPRs.filter(p => p.url !== url);
+      renderStats(allPRs);
+      renderTable(allPRs);
     }
 
     render();

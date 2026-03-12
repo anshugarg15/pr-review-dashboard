@@ -29,6 +29,17 @@ function saveConfig(config) {
 
 let cachedData = { prs: [], lastUpdated: null, errors: [] };
 
+const ARCHIVE_FILE = path.join(__dirname, ".archived-prs.json");
+
+function loadArchived() {
+  try { return JSON.parse(fs.readFileSync(ARCHIVE_FILE, "utf8")); }
+  catch { return []; }
+}
+
+function saveArchived(urls) {
+  fs.writeFileSync(ARCHIVE_FILE, JSON.stringify(urls, null, 2));
+}
+
 async function resolveConnection(toolkit) {
   const accounts = await composio.connectedAccounts.list({
     toolkitSlugs: [toolkit], statuses: ["ACTIVE"],
@@ -121,6 +132,28 @@ app.post("/api/config", (req, res) => {
   res.json({ ok: true });
 });
 
+app.post("/api/archive", (req, res) => {
+  const { url } = req.body;
+  if (!url) return res.status(400).json({ error: "Missing url" });
+  const archived = loadArchived();
+  if (!archived.includes(url)) archived.push(url);
+  saveArchived(archived);
+  cachedData.prs = cachedData.prs.filter(p => p.url !== url);
+  res.json({ ok: true, archived: archived.length });
+});
+
+app.delete("/api/archive", (req, res) => {
+  const { url } = req.body;
+  if (!url) return res.status(400).json({ error: "Missing url" });
+  const archived = loadArchived().filter(u => u !== url);
+  saveArchived(archived);
+  res.json({ ok: true, archived: archived.length });
+});
+
+app.get("/api/archive", (req, res) => {
+  res.json(loadArchived());
+});
+
 function extractPRLinks(text) {
   const matches = [];
   const regex = /https?:\/\/github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)/g;
@@ -133,7 +166,7 @@ function extractPRLinks(text) {
 
 async function fetchSlackChannelPRs(config) {
   const prs = [];
-  const oneWeekAgo = Math.floor((Date.now() - 7 * 86400000) / 1000);
+  const oneWeekAgo = Math.floor((Date.now() - 2 * 86400000) / 1000);
   const history = await slackExec("SLACK_FETCH_CONVERSATION_HISTORY", {
     channel: config.slackChannelId, limit: 200, oldest: String(oneWeekAgo),
   });
@@ -164,7 +197,7 @@ async function fetchSlackDMPRs(config) {
 
   for (const dm of (conversations?.channels || []).filter(c => c.is_im)) {
     try {
-      const oneWeekAgo = Math.floor((Date.now() - 7 * 86400000) / 1000);
+      const oneWeekAgo = Math.floor((Date.now() - 2 * 86400000) / 1000);
       const history = await slackExec("SLACK_FETCH_CONVERSATION_HISTORY", {
         channel: dm.id, limit: 30, oldest: String(oneWeekAgo),
       });
@@ -267,6 +300,9 @@ async function pollAll() {
   catch (err) { errors.push("DMs: " + err.message); }
 
   let allPRs = dedup([...channelPRs, ...dmPRs]);
+
+  const archived = new Set(loadArchived());
+  allPRs = allPRs.filter(p => !archived.has(p.url));
 
   if (githubConn) {
     await Promise.allSettled(allPRs.slice(0, 15).map(pr => enrichAndFilterPR(pr)));
